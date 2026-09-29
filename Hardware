@@ -1,1 +1,40 @@
+BILL OF MATERIALS — F.R.I.D.A.Y.
+==================================================
 
+CORE COMPONENTS
+--------------------------------------------------
+Item                                Qty   Purpose
+--------------------------------------------------
+ESP32 DevKit V1 (30-pin)             3    Microcontroller — Base A, Drone, Base C
+SX1262 LoRa Module (868 MHz)         4    Radio — 1 each for Base A/C, 2 for drone
+LPDA Directional Antenna             1    Uplink leg: Base A to Drone
+IPEX Omnidirectional Antenna         2    Downlink leg: Drone to Base C
+N-to-SMA Adapter                     1    Connects LPDA to coax feed
+SMA-to-U.FL Pigtail Cable            1    Connects adapter to radio module
+AMS1117 3.3V Regulator Module        1    Drone power regulation (mandatory)
+SW-420 Vibration Sensor Module       1    Hardware disaster-trigger demo
+
+
+POWER & ASSEMBLY
+--------------------------------------------------
+Item                                Qty   Purpose
+--------------------------------------------------
+USB Power Bank (5V)                 2-3   Field power — Base A / Base C
+Jumper Wires (assorted)             1 set General wiring
+Breadboard or Perfboard              3    Circuit assembly per node
+Micro-USB / USB-C Cables             3    Programming + power
+
+
+NOTES
+--------------------------------------------------
+- Do not power two SX1262 radios from the ESP32's onboard
+  3.3V rail alone. The external AMS1117 on the drone board
+  is required to avoid brownout-induced radio resets.
+
+- LPDA antennas are often rated near 12 dBi, but that is
+  typically a peak figure at 3+ GHz. Budget link margin
+  using a realistic 5-7 dBi at 868 MHz instead.
+
+- RadioLib (by Jan Gromes) is required for the SX1262's
+  BUSY, RXEN, TXEN, DIO1, and TCXO pins. The older Sandeep
+  Mistry LoRa library does not support these.
