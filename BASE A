@@ -1,0 +1,181 @@
+/*
+  F.R.I.D.A.Y. — Base Station A (Transmitter)
+  Team F.R.I.D.A.Y.
+
+  Sends messages/emergency presets via LoRa (sync word 0xFA) to the drone relay.
+  Hosts a local WiFi dashboard at http://192.168.4.1 for message input and status.
+  Includes an SW-420 vibration sensor as a hardware disaster-trigger demo.
+
+  Requires: RadioLib (Jan Gromes), ESP32 board package.
+*/
+
+#include <RadioLib.h>
+#include <WiFi.h>
+#include <WebServer.h>
+
+SX1262 radio = new Module(5, 35, 4, 34); // NSS, DIO1, RESET, BUSY
+#define DIO1_PIN 35
+#define VIBRATION_PIN 32
+
+const char* ssid = "BASE_A";
+const char* password = "friday123";
+
+WebServer server(80);
+int counter = 0;
+String lastStatus = "Ready";
+String lastReceived = "No reply yet";
+String lastRSSI = "--", lastSNR = "--", lastDist = "--";
+String lastRxMsg = "";
+bool lastPinState = false;
+unsigned long lastVibrationTrigger = 0;
+
+// Calibrate against a known 1 m reference reading for your hardware
+float txRefRSSI = -30.0;
+float pathLossN = 2.7;
+
+#define LOG_SIZE 12
+String logMsgs[LOG_SIZE];
+int logIndex = 0;
+
+void addLog(String entry) {
+  logMsgs[logIndex] = entry;
+  logIndex = (logIndex + 1) % LOG_SIZE;
+}
+
+float getDistanceKm(float rssi) {
+  float distMeters = pow(10.0, (txRefRSSI - rssi) / (10.0 * pathLossN));
+  return distMeters / 1000.0;
+}
+
+void sendMessage(String msg, String dir) {
+  String fullMsg = "#" + String(counter) + " [" + dir + "]: " + msg;
+
+  radio.standby();
+  delay(10);
+  int state = radio.transmit(fullMsg);
+  radio.startReceive();
+
+  bool ok = (state == RADIOLIB_ERR_NONE);
+  lastStatus = ok ? "Sent: " + fullMsg : "FAILED: " + fullMsg;
+  addLog((ok ? "[TX] " : "[TX-FAIL] ") + fullMsg);
+  if (ok) counter++;
+}
+
+void simulateDisasterAlert(String disasterType) {
+  addLog("[CAP-ALERT] " + disasterType + " Detected - Severity: Severe");
+  addLog("[CAP-ALERT] System Armed - Notifying Operator");
+  String autoMsg = "AUTO-ALERT: " + disasterType + " Detected via CAP System";
+  sendMessage(autoMsg, "Unknown");
+}
+
+void checkIncoming() {
+  bool curPinState = digitalRead(DIO1_PIN);
+  if (curPinState && !lastPinState) {
+    String msg;
+    int state = radio.readData(msg);
+    radio.startReceive();
+
+    if (state == RADIOLIB_ERR_NONE && msg.length() > 0 && msg != lastRxMsg) {
+      lastRxMsg = msg;
+      float rssi = radio.getRSSI();
+      float snr = radio.getSNR();
+      lastReceived = msg;
+      lastRSSI = String(rssi, 1);
+      lastSNR = String(snr, 1);
+      lastDist = String(getDistanceKm(rssi), 2);
+      addLog("[RX] " + msg + " RSSI:" + String(rssi, 1));
+    }
+  }
+  lastPinState = curPinState;
+}
+
+void checkDisasterTrigger() {
+  if (digitalRead(VIBRATION_PIN) == HIGH && millis() - lastVibrationTrigger > 5000) {
+    lastVibrationTrigger = millis();
+    sendMessage("AUTO-ALERT: Seismic Activity Detected - Auto SOS Triggered", "Unknown");
+    addLog("[HW-TRIGGER] Vibration sensor fired - Auto SOS sent");
+  }
+}
+
+void handleRoot() {
+  String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>";
+  html += "<style>body{font-family:Arial;background:#0d1117;color:#c9d1d9;padding:20px;max-width:500px;margin:auto}";
+  html += "h1{color:#58a6ff;font-size:22px}input[type=text],select{width:100%;padding:12px;font-size:16px;border-radius:6px;border:1px solid #30363d;background:#161b22;color:#fff;box-sizing:border-box;margin-bottom:10px}";
+  html += "button{width:100%;padding:12px;font-size:16px;border:none;border-radius:6px;margin-bottom:8px;cursor:pointer;font-weight:bold}";
+  html += ".send{background:#238636;color:#fff}.sos{background:#da3633;color:#fff}.med{background:#d29922;color:#000}.clear{background:#1f6feb;color:#fff}";
+  html += ".sim1{background:#8957e5;color:#fff}.sim2{background:#1f6feb;color:#fff}.sim3{background:#d29922;color:#000}";
+  html += ".status{background:#161b22;padding:10px;border-radius:6px;margin-top:10px;font-size:14px}";
+  html += ".incoming{background:#161b22;border:2px solid #3fb950;padding:12px;border-radius:6px;margin-top:10px;font-size:14px}";
+  html += ".dist{color:#d29922;font-weight:bold;margin-top:6px;display:block}";
+  html += ".sensor{background:#161b22;padding:8px;border-radius:6px;margin-bottom:10px;font-size:13px}";
+  html += ".divider{border-top:1px solid #30363d;margin:14px 0;padding-top:10px;font-size:13px;color:#8b949e}";
+  html += ".log{background:#161b22;padding:10px;border-radius:6px;margin-top:10px;font-size:12px;max-height:200px;overflow-y:auto}";
+  html += "p{margin:4px 0;border-bottom:1px solid #21262d;padding-bottom:4px;word-break:break-all}</style></head><body>";
+  html += "<h1>Base Station A - Team F.R.I.D.A.Y.</h1>";
+  html += "<div class='sensor'><b>Seismic Sensor:</b> " + String(digitalRead(VIBRATION_PIN) ? "TRIGGERED" : "Monitoring") + "</div>";
+  html += "<form action='/send' method='GET'>";
+  html += "<input type='text' name='msg' placeholder='Type message...' required>";
+  html += "<select name='dir'><option>North</option><option>North-East</option><option>East</option><option>South-East</option>";
+  html += "<option>South</option><option>South-West</option><option>West</option><option>North-West</option></select>";
+  html += "<button class='send' type='submit'>SEND MESSAGE</button></form>";
+  html += "<a href='/preset?msg=SOS - Immediate Assistance Required&dir=Unknown'><button class='sos'>SOS EMERGENCY</button></a>";
+  html += "<a href='/preset?msg=Medical Emergency&dir=Unknown'><button class='med'>MEDICAL EMERGENCY</button></a>";
+  html += "<a href='/preset?msg=All Clear&dir=Unknown'><button class='clear'>ALL CLEAR</button></a>";
+  html += "<div class='divider'>CAP Alert Simulation</div>";
+  html += "<a href='/simulate?type=Earthquake'><button class='sim1'>SIMULATE EARTHQUAKE</button></a>";
+  html += "<a href='/simulate?type=Flood'><button class='sim2'>SIMULATE FLOOD</button></a>";
+  html += "<a href='/simulate?type=Landslide'><button class='sim3'>SIMULATE LANDSLIDE</button></a>";
+  html += "<div class='status'><b>Last Status:</b><br>" + lastStatus + "</div>";
+  html += "<div class='incoming'><b>Last Reply from C:</b><br>" + lastReceived;
+  html += "<br><span style='color:#8b949e'>RSSI: " + lastRSSI + " dBm | SNR: " + lastSNR + " dB</span>";
+  html += "<span class='dist'>Estimated Distance: ~" + lastDist + " km</span></div>";
+  html += "<div class='log'><b>Activity Log:</b><br>";
+  for (int i = 0; i < LOG_SIZE; i++) {
+    int idx = (logIndex - 1 - i + LOG_SIZE) % LOG_SIZE;
+    if (logMsgs[idx].length() > 0) html += "<p>" + logMsgs[idx] + "</p>";
+  }
+  html += "</div><meta http-equiv='refresh' content='3'></body></html>";
+  server.send(200, "text/html", html);
+}
+
+void handleSend()    { sendMessage(server.arg("msg"), server.arg("dir")); server.sendHeader("Location", "/"); server.send(303); }
+void handlePreset()  { sendMessage(server.arg("msg"), server.arg("dir")); server.sendHeader("Location", "/"); server.send(303); }
+void handleSimulate(){ simulateDisasterAlert(server.arg("type")); server.sendHeader("Location", "/"); server.send(303); }
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+  pinMode(VIBRATION_PIN, INPUT);
+
+  WiFi.softAP(ssid, password);
+  Serial.println("WiFi AP: " + String(ssid));
+  Serial.print("Open: http://"); Serial.println(WiFi.softAPIP());
+
+  server.on("/", handleRoot);
+  server.on("/send", handleSend);
+  server.on("/preset", handlePreset);
+  server.on("/simulate", handleSimulate);
+  server.begin();
+
+  Serial.print("LoRa init... ");
+  int state = radio.begin(868.0);
+  if (state == RADIOLIB_ERR_NONE) {
+    radio.setTCXO(1.8);
+    radio.setRfSwitchPins(25, 26);
+    radio.setOutputPower(10);
+    radio.setSyncWord(0xFA);
+    Serial.println("OK - sync 0xFA");
+  } else {
+    Serial.println("FAIL " + String(state));
+    while (true) { delay(1000); server.handleClient(); }
+  }
+
+  radio.startReceive();
+  Serial.println("Ready - TX/RX active");
+}
+
+void loop() {
+  server.handleClient();
+  checkIncoming();
+  checkDisasterTrigger();
+}
